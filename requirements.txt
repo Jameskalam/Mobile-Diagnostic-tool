@@ -1,0 +1,12 @@
+# Python Desktop Application - Prerequisites
+# Install with: pip install -r requirements.txt
+
+# Modern UI Framework (built on Tkinter - cross-platform, native look)
+customtkinter>=5.2.0
+
+# Optional: For image handling if your app needs it
+# Pillow>=10.0.0
+
+# Optional: For video processing (uncomment when needed)
+# opencv-python>=4.8.0
+# moviepy>=1.0.3
