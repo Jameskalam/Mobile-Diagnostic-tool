@@ -4,6 +4,9 @@
 # Modern UI Framework (built on Tkinter - cross-platform, native look)
 customtkinter>=5.2.0
 
+# Windows System Integration (Required for file times and iOS MTP)
+pywin32>=306
+
 # Optional: For image handling if your app needs it
 # Pillow>=10.0.0
 

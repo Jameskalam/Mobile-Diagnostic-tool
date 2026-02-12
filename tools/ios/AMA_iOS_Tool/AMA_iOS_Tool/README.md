@@ -1,0 +1,1 @@
+Libimobiledevice compiled for Windows
