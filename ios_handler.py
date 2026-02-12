@@ -32,7 +32,8 @@ COUNTDOWN_SECONDS = 3  # countdown before starting
 
 
 class IOSSession:
-    def __init__(self):
+    def __init__(self, udid):
+        self.udid = udid
         self._proc = None
         self._log_file = None
         self.session_start_time = None
@@ -41,11 +42,17 @@ class IOSSession:
 
     # ---------------- CONNECTION ----------------
     def is_connected(self):
-        """Check if iPhone is connected via USB"""
+        """Check if THIS iPhone is connected via USB"""
         exe = os.path.join(AMA_PATH, "idevice_id.exe")
         try:
-            res = subprocess.run([exe, "-l"], capture_output=True, text=True, timeout=5)
-            return len(res.stdout.strip()) > 0
+            res = subprocess.run(
+                [exe, "-l"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return self.udid in res.stdout
         except Exception as e:
             print(f"Connection check failed: {e}")
             return False
@@ -70,12 +77,13 @@ class IOSSession:
         os.makedirs(IOS_LOG_DIR, exist_ok=True)
 
         # Create a custom batch file with unique log name (visible CMD window)
+        # idevicesyslog -u <udid>
         custom_batch = os.path.join(AMA_PATH, f"capture_{unique_id}.bat")
         with open(custom_batch, "w") as f:
             f.write(f"@ECHO OFF\n")
-            f.write(f"ECHO Starting iOS Log Capture...\n")
+            f.write(f"ECHO Starting iOS Log Capture ({self.udid})...\n")
             f.write(f"ECHO.\n")
-            f.write(f"idevicesyslog.exe >> iOS_Logs\\{log_filename}\n")
+            f.write(f"idevicesyslog.exe -u {self.udid} >> iOS_Logs\\{log_filename}\n")
 
         # Launch custom batch file for log capture
         try:

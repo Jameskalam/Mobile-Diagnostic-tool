@@ -1,0 +1,4 @@
+@ECHO OFF
+ECHO Starting iOS Log Capture (00008120-0018751C1EE9A01E)...
+ECHO.
+idevicesyslog.exe -u 00008120-0018751C1EE9A01E >> iOS_Logs\IOS_log_20260212_101538_6eed39e7.txt

@@ -5,6 +5,7 @@ import customtkinter as ctk
 
 from android_handler import AndroidSession
 from ios_handler import IOSSession
+from device_manager import DeviceManager
 
 # --- Apple/Premium Aesthetic Constants ---
 BG_COLOR = "#1c1c1e"  # iOS System Background Dark
@@ -22,402 +23,464 @@ FONT_HEADER = ("Segoe UI", 32, "bold")
 FONT_SUBHEADER = ("Segoe UI", 12, "bold")
 
 
-def main():
-    state = {"session": None}
+class SessionTab:
+    """
+    Manages the UI and Logic for a single device session within a tab.
+    """
 
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("dark-blue")
+    def __init__(self, parent_frame, device_info, close_callback):
+        self.parent = parent_frame
+        self.device = device_info
+        self.close_callback = close_callback
+        self.session = None  # AndroidSession or IOSSession
 
-    app = ctk.CTk()
-    app.title("Mobile Diagnostic Tool")
-    app.geometry("480x800")
-    app.resizable(False, False)
-    app.configure(fg_color=BG_COLOR)
+        # UI Elements
+        self.platform_label = None
+        self.model_label = None
+        self.capture_dropdown = None
+        self.preview_checkbox = None
+        self.scan_checkbox_var = None  # CTk variable
+        self.start_btn = None
+        self.stop_btn = None
+        self.snapshot_btn = None
+        self.save_btn = None
+        self.reset_btn = None
+        self.info_label = None
 
-    # ---------------- INFO ----------------
-    def show_info(event):
-        messagebox.showinfo(
-            "AMQE Tool", "Mobile Diagnostic Workstation\nVersion 2.2 (Premium UI)"
+        self.build_ui()
+
+    def build_ui(self):
+        # --- Info Section ---
+        info_frame = ctk.CTkFrame(self.parent, fg_color="transparent")
+        info_frame.pack(fill="x", pady=(10, 0))
+
+        # Close Button (X) - Like Browser
+        ctk.CTkButton(
+            info_frame,
+            text="✕",
+            width=30,
+            height=30,
+            fg_color="transparent",
+            text_color=TEXT_GREY,
+            hover_color="#3a3a3c",
+            font=("Arial", 14, "bold"),
+            command=self.on_close,
+        ).pack(side="right", padx=(5, 0))
+
+        status_color = (
+            ACCENT_GREEN
+            if self.device["status"] in ("device", "connected")
+            else ACCENT_RED
         )
+        ctk.CTkLabel(
+            info_frame,
+            text=f"● {self.device['status'].upper()}",
+            text_color=status_color,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="right")
 
-    # ---------------- START ----------------
-    def on_start():
-        start_btn.configure(state="disabled")
+        ctk.CTkLabel(
+            info_frame,
+            text=f"{self.device['platform']} • {self.device['id']}",
+            text_color=ACCENT_BLUE,
+            font=FONT_BOLD,
+        ).pack(side="left")
 
-        platform = platform_dropdown.get()
-        capture_mode = capture_dropdown.get()
+        # --- Config Section ---
+        config_frame = ctk.CTkFrame(self.parent, fg_color=CARD_COLOR, corner_radius=15)
+        config_frame.pack(fill="x", pady=15, padx=5)
 
-        info_label.configure(
-            text=f"INITIALIZING {platform}...", text_color=ACCENT_ORANGE
+        # Capture Mode
+        ctk.CTkLabel(
+            config_frame, text="Capture Mode", text_color=TEXT_GREY, font=FONT_SUBHEADER
+        ).pack(pady=(15, 5))
+
+        modes = ["Video + Log", "Video Only", "Log Only", "Screenshot Only"]
+        if self.device["platform"] == "iOS":
+            modes = ["Log Only"]  # iOS restrictions
+
+        self.capture_dropdown = ctk.CTkOptionMenu(
+            config_frame,
+            values=modes,
+            width=250,
+            fg_color="#3a3a3c",
+            button_color="#3a3a3c",
+            text_color=TEXT_WHITE,
+            command=self.update_ui_state,
         )
+        self.capture_dropdown.set(modes[0])
+        self.capture_dropdown.pack(pady=(0, 15))
+
+        # Preview Checkbox (Android Only)
+        if self.device["platform"] == "Android":
+            self.scan_checkbox_var = ctk.BooleanVar(value=True)
+            self.preview_checkbox = ctk.CTkCheckBox(
+                config_frame,
+                text="Show Preview Window",
+                variable=self.scan_checkbox_var,
+                text_color=TEXT_WHITE,
+                checkmark_color=TEXT_WHITE,
+                fg_color=ACCENT_BLUE,
+                hover_color=ACCENT_BLUE,
+            )
+            self.preview_checkbox.pack(pady=(0, 15))
+
+        # --- Controls Section ---
+        self.start_btn = ctk.CTkButton(
+            self.parent,
+            text="Start Session",
+            height=40,
+            font=FONT_BOLD,
+            fg_color=ACCENT_GREEN,
+            hover_color="#2da84a",
+            command=self.on_start,
+        )
+        self.start_btn.pack(pady=5, fill="x", padx=20)
+
+        self.stop_btn = ctk.CTkButton(
+            self.parent,
+            text="Stop Session",
+            height=40,
+            font=FONT_BOLD,
+            fg_color="#3a3a3c",
+            state="disabled",
+            hover_color=ACCENT_RED,
+            command=self.on_stop,
+        )
+        self.stop_btn.pack(pady=5, fill="x", padx=20)
+
+        # Extras
+        extras_frame = ctk.CTkFrame(self.parent, fg_color="transparent")
+        extras_frame.pack(fill="x", pady=10, padx=15)
+
+        self.snapshot_btn = ctk.CTkButton(
+            extras_frame,
+            text="Screenshot",
+            width=100,
+            fg_color="#3a3a3c",
+            state="disabled",
+            command=self.on_snapshot,
+        )
+        self.snapshot_btn.pack(side="left", padx=5, expand=True)
+
+        self.reset_btn = ctk.CTkButton(
+            extras_frame,
+            text="Discard",
+            width=100,
+            fg_color="#3a3a3c",
+            state="disabled",
+            hover_color=ACCENT_RED,
+            command=self.on_reset,
+        )
+        self.reset_btn.pack(side="left", padx=5, expand=True)
+
+        self.save_btn = ctk.CTkButton(
+            self.parent,
+            text="Export Data",
+            height=40,
+            font=FONT_BOLD,
+            fg_color="#3a3a3c",
+            state="disabled",
+            hover_color=ACCENT_BLUE,
+            command=self.on_save,
+        )
+        self.save_btn.pack(pady=10, fill="x", padx=20)
+
+        self.info_label = ctk.CTkLabel(self.parent, text="READY", text_color=TEXT_GREY)
+        self.info_label.pack(pady=5)
+
+        self.update_ui_state(self.capture_dropdown.get())
+
+    def update_ui_state(self, mode):
+        # Enable/Disable snapshot based on mode logic if needed
+        if mode == "Screenshot Only":
+            self.start_btn.configure(state="disabled", fg_color="#3a3a3c")
+            self.stop_btn.configure(state="disabled", fg_color="#3a3a3c")
+            self.snapshot_btn.configure(state="normal", fg_color=ACCENT_ORANGE)
+            self.info_label.configure(
+                text="READY FOR SCREENSHOTS", text_color=ACCENT_GREEN
+            )
+        else:
+            # Regular recording modes
+            if not self.session:  # If not running
+                self.start_btn.configure(state="normal", fg_color=ACCENT_GREEN)
+                self.stop_btn.configure(state="disabled", fg_color="#3a3a3c")
+                self.snapshot_btn.configure(
+                    state="disabled", fg_color="#3a3a3c"
+                )  # Only allow snapshot when running? Or separate?
+                # Let's say separate for now unless running
+                self.info_label.configure(text="READY", text_color=TEXT_GREY)
+
+    def on_start(self):
+        mode = self.capture_dropdown.get()
+        show_preview = True
+        if self.scan_checkbox_var:
+            show_preview = self.scan_checkbox_var.get()
+
+        self.start_btn.configure(state="disabled")
+        self.info_label.configure(text="INITIALIZING...", text_color=ACCENT_ORANGE)
 
         def run():
-            # ---------- iOS restrictions ----------
-            if platform == "iOS":
-                # iOS cannot start video only
-                if capture_mode == "Video Only":
-                    app.after(
-                        0,
-                        lambda: messagebox.showinfo(
-                            "Info",
-                            "iOS cannot start video automatically.\nPlease select 'Log Only' or 'Both'.",
-                        ),
+            try:
+                if self.device["platform"] == "Android":
+                    self.session = AndroidSession(
+                        self.device["id"], capture_mode=mode, show_preview=show_preview
                     )
-                    app.after(0, lambda: start_btn.configure(state="normal"))
+                else:
+                    self.session = IOSSession(self.device["id"])
+
+                if not self.session.is_connected():
+                    messagebox.showerror(
+                        "Error", f"Device {self.device['id']} not accessible!"
+                    )
+                    self.session = None
+                    self.start_btn.configure(state="normal")
                     return
 
-                state["session"] = IOSSession()
+                self.session.start()
 
-                # Check iOS connection
-                if not state["session"].is_connected():
-                    app.after(
-                        0,
-                        lambda: [
-                            messagebox.showerror("Error", "iOS device not found!"),
-                            start_btn.configure(state="normal"),
-                            stop_btn.configure(state="disabled"),
-                            save_btn.configure(state="disabled"),
-                            info_label.configure(
-                                text="SYSTEM READY", text_color=TEXT_GREY
-                            ),
-                        ],
-                    )
-                    return
-
-                # Start log capture
-                state["session"].start()
-                app.after(
+                # UI Updates on Main Thread
+                self.start_btn.after(
                     0,
                     lambda: [
-                        stop_btn.configure(state="normal"),
-                        info_label.configure(
-                            text="● LOG RECORDING iOS", text_color=ACCENT_RED
+                        self.stop_btn.configure(state="normal", fg_color=ACCENT_RED),
+                        self.snapshot_btn.configure(
+                            state="normal", fg_color=ACCENT_ORANGE
+                        )
+                        if self.device["platform"] == "Android"
+                        else None,
+                        self.info_label.configure(
+                            text=f"● RECORDING ({mode})", text_color=ACCENT_RED
                         ),
                     ],
                 )
-                return
-
-            # ---------- Android ----------
-            state["session"] = AndroidSession(capture_mode)
-            if not state["session"].is_connected():
-                app.after(
-                    0,
-                    lambda: [
-                        messagebox.showerror("Error", "Android device not found!"),
-                        start_btn.configure(state="normal"),
-                        stop_btn.configure(state="disabled"),
-                        save_btn.configure(state="disabled"),
-                        reset_btn.configure(state="disabled"),
-                        info_label.configure(text="SYSTEM READY", text_color=TEXT_GREY),
-                    ],
-                )
-                return
-
-            state["session"].start()
-
-            app.after(
-                0,
-                lambda: [
-                    stop_btn.configure(state="normal"),
-                    info_label.configure(
-                        text=f"● RECORDING Android ({capture_mode})",
-                        text_color=ACCENT_RED,
-                    ),
-                ],
-            )
+            except Exception as e:
+                print(e)
+                self.start_btn.after(0, lambda: messagebox.showerror("Error", str(e)))
+                self.start_btn.configure(state="normal")
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ---------------- STOP ----------------
-    def on_stop():
-        if not state["session"]:
+    def on_stop(self):
+        if not self.session:
             return
-
-        info_label.configure(text="FINALIZING SESSION...", text_color=ACCENT_ORANGE)
+        self.info_label.configure(text="FINALIZING...", text_color=ACCENT_ORANGE)
+        self.stop_btn.configure(state="disabled")
 
         def run():
-            state["session"].stop()
-            app.after(
+            self.session.stop()
+            self.start_btn.after(
                 0,
                 lambda: [
-                    start_btn.configure(state="normal"),
-                    stop_btn.configure(state="disabled"),
-                    save_btn.configure(state="normal"),
-                    reset_btn.configure(state="normal"),
-                    info_label.configure(
-                        text="STOPPED – READY TO EXPORT", text_color=ACCENT_GREEN
+                    self.start_btn.configure(state="normal"),
+                    self.save_btn.configure(state="normal", fg_color=ACCENT_BLUE),
+                    self.reset_btn.configure(state="normal", fg_color=ACCENT_RED),
+                    self.info_label.configure(
+                        text="SESSION FINISHED", text_color=ACCENT_GREEN
                     ),
                 ],
             )
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ---------------- SAVE ----------------
-    def on_save():
+    def on_snapshot(self):
+        # Lazy init for Screenshot Only mode
+        if self.capture_dropdown.get() == "Screenshot Only" and not self.session:
+            self.session = AndroidSession(self.device["id"], "Screenshot Only")
+
+        if self.session and hasattr(self.session, "take_screenshot"):
+            self.snapshot_btn.configure(state="disabled")
+
+            def run():
+                success, path = self.session.take_screenshot()
+                self.snapshot_btn.after(
+                    0,
+                    lambda: [
+                        self.snapshot_btn.configure(state="normal"),
+                        self.save_btn.configure(state="normal", fg_color=ACCENT_BLUE),
+                        self.reset_btn.configure(state="normal", fg_color=ACCENT_RED),
+                        self.info_label.configure(
+                            text="SNAPSHOT SAVED", text_color=ACCENT_ORANGE
+                        )
+                        if success
+                        else self.info_label.configure(
+                            text="SNAPSHOT FAILED", text_color=ACCENT_RED
+                        ),
+                    ],
+                )
+                # Revert text
+                self.snapshot_btn.after(
+                    2000,
+                    lambda: self.info_label.configure(
+                        text="READY"
+                        if not self.stop_btn.cget("state") == "normal"
+                        else "● RECORDING"
+                    ),
+                )
+
+            threading.Thread(target=run, daemon=True).start()
+
+    def on_save(self):
         folder = filedialog.askdirectory()
         if folder:
-            success, msg = state["session"].save(Path(folder))
+            success, msg = self.session.save(Path(folder))
             messagebox.showinfo("Export Result", msg)
 
-    # ---------------- HEADER ----------------
-    # Minimalist Header
-    ctk.CTkLabel(app, text="Diagnostic", font=FONT_HEADER, text_color=TEXT_WHITE).pack(
-        pady=(40, 5)
-    )
+    def on_reset(self):
+        if self.session:
+            self.session.reset()
+        self.session = None
 
-    ctk.CTkLabel(
-        app,
-        text="Workstation Pro",
-        font=("Segoe UI", 16),
-        text_color=ACCENT_BLUE,
-    ).pack(pady=(0, 30))
+        self.save_btn.configure(state="disabled", fg_color="#3a3a3c")
+        self.reset_btn.configure(state="disabled", fg_color="#3a3a3c")
+        self.info_label.configure(text="SESSION DISCARDED", text_color=ACCENT_ORANGE)
+        self.update_ui_state(self.capture_dropdown.get())
 
-    # ---------------- CARD ----------------
-    card = ctk.CTkFrame(app, fg_color=CARD_COLOR, corner_radius=20)
-    card.pack(padx=20, pady=10, fill="both", expand=True)
+    def on_close(self):
+        # Stop session if running
+        if self.session:
+            try:
+                self.session.stop()
+            except:
+                pass
+        # Callback to remove tab
+        if self.close_callback:
+            self.close_callback(self.device["id"])
 
-    # Platform selector
-    ctk.CTkLabel(
-        card, text="Target Platform", font=FONT_SUBHEADER, text_color=TEXT_GREY
-    ).pack(pady=(25, 8))
-    platform_dropdown = ctk.CTkOptionMenu(
-        card,
-        values=["Android", "iOS"],
-        width=280,
-        height=40,
-        fg_color="#3a3a3c",
-        button_color="#3a3a3c",
-        button_hover_color="#48484a",
-        text_color=TEXT_WHITE,
-        dropdown_fg_color=CARD_COLOR,
-        font=FONT_MAIN,
-    )
-    platform_dropdown.set("Android")
-    platform_dropdown.pack(pady=(0, 20))
 
-    # Capture selector
-    ctk.CTkLabel(
-        card, text="Capture Mode", font=FONT_SUBHEADER, text_color=TEXT_GREY
-    ).pack(pady=(10, 8))
-    capture_dropdown = ctk.CTkOptionMenu(
-        card,
-        values=["Video + Log", "Video Only", "Log Only", "Screenshot Only"],
-        width=280,
-        height=40,
-        fg_color="#3a3a3c",
-        button_color="#3a3a3c",
-        button_hover_color="#48484a",
-        text_color=TEXT_WHITE,
-        dropdown_fg_color=CARD_COLOR,
-        font=FONT_MAIN,
-    )
-    capture_dropdown.set("Video + Log")
-    capture_dropdown.pack(pady=(0, 30))
+class DiagnosticApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
 
-    # GUI State Updater based on Mode
-    def update_ui_for_mode(mode):
-        if mode == "Screenshot Only":
-            start_btn.configure(state="disabled", fg_color="#3a3a3c")
-            stop_btn.configure(state="disabled", fg_color="#3a3a3c")
-            snapshot_btn.configure(state="normal", fg_color=ACCENT_ORANGE)
-            save_btn.configure(state="disabled", fg_color="#3a3a3c")
-            reset_btn.configure(state="disabled", fg_color="#3a3a3c")
-            info_label.configure(text="READY FOR SCREENSHOTS", text_color=ACCENT_GREEN)
-        else:
-            start_btn.configure(state="normal", fg_color=ACCENT_GREEN)
-            stop_btn.configure(state="disabled", fg_color="#3a3a3c")
-            snapshot_btn.configure(state="disabled", fg_color="#3a3a3c")
-            save_btn.configure(state="disabled", fg_color="#3a3a3c")
-            reset_btn.configure(state="disabled", fg_color="#3a3a3c")
-            info_label.configure(text="SYSTEM READY", text_color=TEXT_GREY)
+        self.title("Mobile Diagnostic Workstation Pro")
+        self.geometry("600x850")  # Slightly wider for tabs
+        self.configure(fg_color=BG_COLOR)
 
-    # Disable "Video Only" option when iOS is selected
-    def update_capture_options(platform):
-        if platform == "iOS":
-            capture_dropdown.configure(values=["Log Only", "Video + Log"])
-            capture_dropdown.set("Log Only")
-        else:
-            capture_dropdown.configure(
-                values=["Video + Log", "Video Only", "Log Only", "Screenshot Only"]
-            )
-            capture_dropdown.set("Video + Log")
+        self.device_tabs = {}  # id -> SessionTab
 
-        # Trigger UI update for the new default
-        update_ui_for_mode(capture_dropdown.get())
+        self.build_ui()
+        self.refresh_devices()
 
-    platform_dropdown.configure(command=update_capture_options)
-    capture_dropdown.configure(command=update_ui_for_mode)
+    def build_ui(self):
+        # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(pady=20)
 
-    # Buttons
-    start_btn = ctk.CTkButton(
-        card,
-        text="Start Session",
-        height=45,
-        width=280,
-        font=FONT_BOLD,
-        fg_color=ACCENT_GREEN,
-        hover_color="#2da84a",
-        corner_radius=12,
-        command=on_start,
-    )
-    start_btn.pack(pady=8)
+        ctk.CTkLabel(
+            header_frame, text="Diagnostic", font=FONT_HEADER, text_color=TEXT_WHITE
+        ).pack(side="left")
+        ctk.CTkLabel(
+            header_frame, text=" Pro", font=FONT_HEADER, text_color=ACCENT_BLUE
+        ).pack(side="left")
 
-    stop_btn = ctk.CTkButton(
-        card,
-        text="Stop Session",
-        height=45,
-        width=280,
-        font=FONT_BOLD,
-        fg_color="#3a3a3c",  # Disabled state look initially
-        hover_color=ACCENT_RED,
-        corner_radius=12,
-        state="disabled",
-        command=on_stop,
-    )
-    stop_btn.pack(pady=8)
-
-    # ---------------- SNAPSHOT ----------------
-    def on_snapshot():
-        # Auto-initialize session if not running (Lazy Start for Screenshot Only)
-        if not state["session"]:
-            if capture_dropdown.get() == "Screenshot Only":
-                platform = platform_dropdown.get()
-                if platform == "Android":
-                    state["session"] = AndroidSession("Screenshot Only")
-                    if not state["session"].is_connected():
-                        messagebox.showerror("Error", "Android device not found!")
-                        state["session"] = None
-                        return
-                    state["session"].start()
-                    # Allow Reset now that we have a session
-                    reset_btn.configure(state="normal", fg_color=ACCENT_RED)
-                else:
-                    return  # iOS not fully supported for screenshot only yet
-
-        if not state["session"] or not hasattr(state["session"], "take_screenshot"):
-            return
-
-        # Disable button during countdown
-        snapshot_btn.configure(state="disabled", fg_color="#3a3a3c")
-
-        def execute_capture():
-            success, path = state["session"].take_screenshot()
-
-            # Re-enable button
-            snapshot_btn.configure(state="normal", fg_color=ACCENT_ORANGE)
-
-            if success:
-                # Flash confirmation or small toast
-                info_label.configure(
-                    text=f"SNAPSHOT SAVED: {path.name}", text_color=ACCENT_ORANGE
-                )
-
-                # Enable Export since we have data now
-                save_btn.configure(state="normal", fg_color=ACCENT_BLUE)
-                reset_btn.configure(state="normal", fg_color=ACCENT_RED)
-
-                # Revert text after 2 seconds
-                mode_text = capture_dropdown.get()
-                status_text = (
-                    "● READY FOR SCREENSHOTS"
-                    if mode_text == "Screenshot Only"
-                    else f"● RECORDING Android ({mode_text})"
-                )
-
-                app.after(
-                    2000,
-                    lambda: info_label.configure(
-                        text=status_text, text_color=ACCENT_RED
-                    ),
-                )
-            else:
-                messagebox.showerror("Error", "Screenshot failed")
-                info_label.configure(text="SNAPSHOT FAILED", text_color=ACCENT_RED)
-
-        def countdown(count):
-            if count > 0:
-                info_label.configure(
-                    text=f"CAPTURING IN {count}...", text_color=ACCENT_ORANGE
-                )
-                app.after(1000, lambda: countdown(count - 1))
-            else:
-                info_label.configure(text="CAPTURING...", text_color=ACCENT_RED)
-                app.after(100, execute_capture)
-
-        # Start countdown
-        countdown(3)
-
-    snapshot_btn = ctk.CTkButton(
-        card,
-        text="Capture Screenshot",
-        height=45,
-        width=280,
-        font=FONT_BOLD,
-        fg_color="#3a3a3c",
-        hover_color=ACCENT_ORANGE,
-        corner_radius=12,
-        state="disabled",
-        command=on_snapshot,
-    )
-    snapshot_btn.pack(pady=8)
-
-    save_btn = ctk.CTkButton(
-        card,
-        text="Export Data",
-        height=45,
-        width=280,
-        font=FONT_BOLD,
-        fg_color="#3a3a3c",
-        hover_color=ACCENT_BLUE,
-        corner_radius=12,
-        state="disabled",
-        command=on_save,
-    )
-    save_btn.pack(pady=(25, 8))
-
-    # ---------------- RESET ----------------
-    def on_reset():
-        if state["session"]:
-            state["session"].reset()  # Clean up temp files
-
-        # Reset UI to initial state based on current mode
-        update_ui_for_mode(capture_dropdown.get())
-
-        info_label.configure(text="SESSION DISCARDED", text_color=ACCENT_ORANGE)
-        app.after(
-            2000,
-            lambda: update_ui_for_mode(capture_dropdown.get()),
+        # Refresh Button
+        self.refresh_btn = ctk.CTkButton(
+            self,
+            text="↻ Refresh Devices",
+            width=120,
+            height=30,
+            fg_color="#3a3a3c",
+            hover_color="#505050",
+            command=self.refresh_devices,
         )
+        self.refresh_btn.pack(pady=(0, 10))
 
-    reset_btn = ctk.CTkButton(
-        card,
-        text="Discard Session",
-        height=45,
-        width=280,
-        font=FONT_BOLD,
-        fg_color="#3a3a3c",
-        hover_color=ACCENT_RED,
-        corner_radius=12,
-        state="disabled",
-        command=on_reset,
-    )
-    reset_btn.pack(pady=8)
+        # Tab View
+        self.tab_system = ctk.CTkTabview(
+            self,
+            width=550,
+            height=600,
+            corner_radius=20,
+            fg_color=CARD_COLOR,
+            segmented_button_fg_color="#3a3a3c",
+            segmented_button_selected_color=ACCENT_BLUE,
+            segmented_button_unselected_color="#3a3a3c",
+            text_color=TEXT_WHITE,
+        )
+        self.tab_system.pack(padx=20, pady=10, fill="both", expand=True)
 
-    # Status
-    info_label = ctk.CTkLabel(
-        card, text="SYSTEM READY", font=("Segoe UI", 12), text_color=TEXT_GREY
-    )
-    info_label.pack(pady=20)
+        # Initial Placeholder
+        self.tab_system.add("No Devices")
+        ctk.CTkLabel(
+            self.tab_system.tab("No Devices"),
+            text="No devices connected.\nCheck USB connection and click Refresh.",
+            text_color=TEXT_GREY,
+        ).pack(expand=True)
 
-    # Info icon
-    info_icon = ctk.CTkLabel(
-        app, text="ⓘ", font=("Segoe UI", 16), text_color=TEXT_GREY, cursor="hand2"
-    )
-    info_icon.place(relx=0.92, rely=0.97, anchor="center")
-    info_icon.bind("<Button-1>", show_info)
+    def refresh_devices(self):
+        self.refresh_btn.configure(state="disabled", text="Scanning...")
 
-    app.mainloop()
+        def scan():
+            devices = DeviceManager.get_all_devices()
+            self.after(0, lambda: self.update_tabs(devices))
+
+        threading.Thread(target=scan, daemon=True).start()
+
+    def update_tabs(self, devices):
+        current_ids = set(self.device_tabs.keys())
+        new_ids = {d["id"] for d in devices}
+
+        # Remove "No Devices" placeholder if real devices exist
+        if new_ids and "No Devices" in self.tab_system._tab_dict:
+            try:
+                self.tab_system.delete("No Devices")
+            except ValueError:
+                pass  # Already deleted
+
+        # Add new devices
+        for dev in devices:
+            if dev["id"] not in current_ids:
+                # Truncate label if too long
+                label = f"{dev['model']} ({dev['id'][-4:]})"
+                self.tab_system.add(label)
+
+                # Initialize Tab Logic in the new frame
+                tab_frame = self.tab_system.tab(label)
+                # Pass self.close_tab as callback
+                self.device_tabs[dev["id"]] = SessionTab(tab_frame, dev, self.close_tab)
+
+        # Handle disconnected devices (Optional)
+
+        if not new_ids and len(self.device_tabs) == 0:
+            if "No Devices" not in self.tab_system._tab_dict:
+                self.tab_system.add("No Devices")
+                ctk.CTkLabel(
+                    self.tab_system.tab("No Devices"),
+                    text="No devices connected.",
+                    text_color=TEXT_GREY,
+                ).pack(expand=True)
+
+        self.refresh_btn.configure(state="normal", text="↻ Refresh Devices")
+
+    def close_tab(self, device_id):
+        if device_id in self.device_tabs:
+            # Determine tab name to delete
+            # We reconstruct the label logic used in update_tabs
+            dev = self.device_tabs[device_id].device
+            label = f"{dev['model']} ({dev['id'][-4:]})"
+
+            # Verify if this tab exists (it might have a slightly different name if we changed logic, safe check)
+            try:
+                self.tab_system.delete(label)
+            except:
+                # Fallback: scan tabs if needed, but precise name should work
+                pass
+
+            del self.device_tabs[device_id]
+
+            # If no tabs left, show placeholder
+            if len(self.device_tabs) == 0:
+                if "No Devices" not in self.tab_system._tab_dict:
+                    self.tab_system.add("No Devices")
+                    ctk.CTkLabel(
+                        self.tab_system.tab("No Devices"),
+                        text="No devices connected.",
+                        text_color=TEXT_GREY,
+                    ).pack(expand=True)
 
 
 if __name__ == "__main__":
-    main()
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("dark-blue")
+    app = DiagnosticApp()
+    app.mainloop()
