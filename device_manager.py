@@ -3,6 +3,14 @@ from pathlib import Path
 import sys
 import re
 
+# ==============================================================================
+# THE SCOUT (device_manager.py)
+# ==============================================================================
+# This file has ONE job: To go out and find devices.
+# It does NOT control them. It just yells "I found a Pixel 7!" or "I found an iPhone!"
+# It's like the Host checking who is waiting at the door.
+# ==============================================================================
+
 # Determine base path for portability
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -113,7 +121,8 @@ class DeviceManager:
 
     @staticmethod
     def get_all_devices():
-        return DeviceManager.get_android_devices() + DeviceManager.get_ios_devices()
+        devices = DeviceManager.get_android_devices() + DeviceManager.get_ios_devices()
+        return devices[:5]
 
 
 if __name__ == "__main__":

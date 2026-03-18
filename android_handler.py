@@ -9,6 +9,16 @@ import win32file
 import win32con
 
 import sys
+import os
+import re
+
+# ==============================================================================
+# THE CHEF: ANDROID (android_handler.py)
+# ==============================================================================
+# This file does the actual cooking (recording, logging) for Android phones.
+# It receives an order (Start Session) from the Waiter (main.py).
+# It uses tools like ADB and SCRCPY to get the job done.
+# ==============================================================================
 
 # Determine base path for portability
 if getattr(sys, "frozen", False):
@@ -36,7 +46,6 @@ class AndroidSession:
         self.show_preview = show_preview
         self._proc = None
         self._log = None
-        self._log_file = None
         self.vid_path = None
         self.log_path = None
         self.session_start_time = None
@@ -98,6 +107,9 @@ class AndroidSession:
         # Record session start time
         self.session_start_time = time.time()
 
+        # Fetch and print device info to terminal immediately
+        self.get_device_info()
+
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_serial = self.serial_id.replace(":", "_")  # Handle wireless adb serials
 
@@ -107,20 +119,11 @@ class AndroidSession:
 
         # LOG ONLY or BOTH
         if self.capture_mode in ("Video + Log", "Log Only"):
-            subprocess.run(
-                f'"{ADB_PATH}" -s {self.serial_id} logcat -c',
-                shell=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-
-            # Open file handle directly for exact ADB output format
-            self._log_file = open(self.log_path, "w", encoding="utf-8", buffering=1)
-
+            # Execute exact shell command with redirect to match terminal behavior exactly
+            cmd = f'"{ADB_PATH}" -s {self.serial_id} logcat -v threadtime > "{self.log_path}"'
             self._log = subprocess.Popen(
-                f'"{ADB_PATH}" -s {self.serial_id} logcat -v threadtime',
+                cmd,
                 shell=True,
-                stdout=self._log_file,
-                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.CREATE_NO_WINDOW,
             )
@@ -204,6 +207,220 @@ class AndroidSession:
             print(f"Screenshot failed: {e}")
             return False, None
 
+    def get_device_info(self):
+        """Fetches Brand, Model, OS Version, Build, Locale, Account, and App Version via ADB"""
+        info = {
+            "Brand": "Unknown",
+            "Device": "Unknown",
+            "OS_Version": "Unknown",
+            "Build": "Unknown",
+            "Locale": "Unknown",
+            "Account": "Unknown",
+            "App_Version": "N/A",
+        }
+        print(f"\n🔍 Fetching diagnostics for device {self.serial_id}...", flush=True)
+        try:
+            # 1. Device Identity (Brand + Model)
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "ro.product.brand",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            info["Brand"] = res.stdout.strip().capitalize() or "Unknown"
+
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "ro.product.model",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            info["Device"] = res.stdout.strip() or "Unknown"
+            print(
+                f"   - Identified Device: {info['Brand']} {info['Device']}", flush=True
+            )
+
+            # 2. OS Version (Android + Fire OS check)
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "ro.build.version.release",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            android_ver = res.stdout.strip() or "Unknown"
+
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "ro.build.version.fireos",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            fireos_ver = res.stdout.strip()
+
+            if fireos_ver:
+                info["OS_Version"] = f"Android {android_ver} (Fire OS {fireos_ver})"
+            else:
+                info["OS_Version"] = f"Android {android_ver}"
+
+            # 3. Build Number
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "ro.build.display.id",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            info["Build"] = res.stdout.strip() or "Unknown"
+
+            # 4. Locale
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "getprop",
+                    "persist.sys.locale",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            info["Locale"] = res.stdout.strip() or "Unknown"
+
+            # 5. Account
+            res = subprocess.run(
+                [ADB_PATH, "-s", self.serial_id, "shell", "dumpsys", "account"],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            accounts = re.findall(
+                r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", res.stdout
+            )
+            if accounts:
+                info["Account"] = accounts[0]
+
+            # 6. Active App Detection (More robust using dumpsys window)
+            res = subprocess.run(
+                [
+                    ADB_PATH,
+                    "-s",
+                    self.serial_id,
+                    "shell",
+                    "dumpsys",
+                    "window",
+                    "windows",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            package_name = None
+            for line in res.stdout.splitlines():
+                if "mCurrentFocus" in line or "mFocusedApp" in line:
+                    match = re.search(r"([a-z0-9_]+\.[a-z0-9_.]+)", line)
+                    if match:
+                        package_name = match.group(1)
+                        if package_name not in (
+                            "android",
+                            "com.android.systemui",
+                            "com.amazon.firelauncher",
+                        ):
+                            break
+
+            if not package_name:  # Fallback
+                res = subprocess.run(
+                    [
+                        ADB_PATH,
+                        "-s",
+                        self.serial_id,
+                        "shell",
+                        "dumpsys",
+                        "activity",
+                        "recents",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                for line in res.stdout.splitlines():
+                    if "Recent #0" in line:
+                        match = re.search(r"([a-zA-Z0-9._]+)/", line)
+                        if match:
+                            package_name = match.group(1)
+                        break
+
+            if package_name:
+                res = subprocess.run(
+                    [
+                        ADB_PATH,
+                        "-s",
+                        self.serial_id,
+                        "shell",
+                        "dumpsys",
+                        "package",
+                        package_name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                for line in res.stdout.splitlines():
+                    if "versionName=" in line:
+                        info["App_Version"] = line.split("=")[-1].strip()
+                        break
+
+            print("\n" + "=" * 55, flush=True)
+            print("📱 DEVICE DIAGNOSTICS DETECTED", flush=True)
+            print(f"   Device:      {info['Brand']} {info['Device']}", flush=True)
+            print(f"   OS Version:  {info['OS_Version']}", flush=True)
+            print(f"   Build:       {info['Build']}", flush=True)
+            print(f"   Locale:      {info['Locale']}", flush=True)
+            print(f"   Account:     {info['Account']}", flush=True)
+            print(f"   Active App:  {package_name or 'N/A'}", flush=True)
+            print(f"   App Version: {info['App_Version']}", flush=True)
+            print("=" * 55 + "\n", flush=True)
+
+        except Exception as e:
+            print(f"Failed to fetch device info: {e}", flush=True)
+
+        return info
+
     def stop(self):
         # Record session end time
         self.session_end_time = time.time()
@@ -227,10 +444,6 @@ class AndroidSession:
                 stderr=subprocess.DEVNULL,
             )
             time.sleep(1)
-
-            # Close file handle to ensure all data is written
-            if self._log_file:
-                self._log_file.close()
 
         time.sleep(2)
 
@@ -346,4 +559,3 @@ class AndroidSession:
         self.session_end_time = None
         self._proc = None
         self._log = None
-        self._log_file = None

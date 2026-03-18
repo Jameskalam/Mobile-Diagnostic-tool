@@ -7,6 +7,21 @@ from android_handler import AndroidSession
 from ios_handler import IOSSession
 from device_manager import DeviceManager
 
+# ==============================================================================
+# WELCOME TO THE COMMAND CENTER (main.py)
+# ==============================================================================
+# Think of this file as the "Waiter" in a restaurant.
+# 1. It greets you (The User Interface).
+# 2. It takes your order (Start Recording, Stop Recording).
+# 3. It tells the Kitchen (AndroidSession/IOSSession) what to cook.
+#
+# KEY SECTIONS:
+# - SessionTab: Represents ONE table (one phone). It has its own Start/Stop buttons.
+# - DiagnosticApp: The entire Restaurant building. It holds all the tables (tabs).
+# ==============================================================================
+
+# --- Apple/Premium Aesthetic Constants ---
+
 # --- Apple/Premium Aesthetic Constants ---
 BG_COLOR = "#1c1c1e"  # iOS System Background Dark
 CARD_COLOR = "#2c2c2e"  # iOS Secondary System Background Dark
@@ -25,16 +40,18 @@ FONT_SUBHEADER = ("Segoe UI", 12, "bold")
 
 class SessionTab:
     """
-    Manages the UI and Logic for a single device session within a tab.
+    THE TABLE
+    This class controls everything for ONE specific phone.
+    If you have 3 phones connected, you will have 3 copies of this class running.
     """
 
     def __init__(self, parent_frame, device_info, close_callback):
         self.parent = parent_frame
-        self.device = device_info
+        self.device = device_info  # The Menu (Phone Details: ID, Model)
         self.close_callback = close_callback
-        self.session = None  # AndroidSession or IOSSession
+        self.session = None  # The Order (The active recording job)
 
-        # UI Elements
+        # UI Elements (The Cutlery)
         self.platform_label = None
         self.model_label = None
         self.capture_dropdown = None
@@ -97,7 +114,7 @@ class SessionTab:
 
         modes = ["Video + Log", "Video Only", "Log Only", "Screenshot Only"]
         if self.device["platform"] == "iOS":
-            modes = ["Log Only"]  # iOS restrictions
+            modes = ["Log Only", "Screenshot Only"]  # iOS restrictions
 
         self.capture_dropdown = ctk.CTkOptionMenu(
             config_frame,
@@ -206,9 +223,11 @@ class SessionTab:
                 self.start_btn.configure(state="normal", fg_color=ACCENT_GREEN)
                 self.stop_btn.configure(state="disabled", fg_color="#3a3a3c")
                 self.snapshot_btn.configure(
-                    state="disabled", fg_color="#3a3a3c"
-                )  # Only allow snapshot when running? Or separate?
-                # Let's say separate for now unless running
+                    state="normal" if self.device["platform"] == "iOS" else "disabled",
+                    fg_color=ACCENT_ORANGE
+                    if self.device["platform"] == "iOS"
+                    else "#3a3a3c",
+                )
                 self.info_label.configure(text="READY", text_color=TEXT_GREY)
 
     def on_start(self):
@@ -233,7 +252,6 @@ class SessionTab:
                     messagebox.showerror(
                         "Error", f"Device {self.device['id']} not accessible!"
                     )
-                    self.session = None
                     self.start_btn.configure(state="normal")
                     return
 
@@ -246,17 +264,15 @@ class SessionTab:
                         self.stop_btn.configure(state="normal", fg_color=ACCENT_RED),
                         self.snapshot_btn.configure(
                             state="normal", fg_color=ACCENT_ORANGE
-                        )
-                        if self.device["platform"] == "Android"
-                        else None,
+                        ),
                         self.info_label.configure(
                             text=f"● RECORDING ({mode})", text_color=ACCENT_RED
                         ),
                     ],
                 )
             except Exception as e:
-                print(e)
-                self.start_btn.after(0, lambda: messagebox.showerror("Error", str(e)))
+                err_msg = str(e)
+                self.start_btn.after(0, lambda: messagebox.showerror("Error", err_msg))
                 self.start_btn.configure(state="normal")
 
         threading.Thread(target=run, daemon=True).start()
@@ -286,7 +302,10 @@ class SessionTab:
     def on_snapshot(self):
         # Lazy init for Screenshot Only mode
         if self.capture_dropdown.get() == "Screenshot Only" and not self.session:
-            self.session = AndroidSession(self.device["id"], "Screenshot Only")
+            if self.device["platform"] == "Android":
+                self.session = AndroidSession(self.device["id"], "Screenshot Only")
+            else:
+                self.session = IOSSession(self.device["id"])
 
         if self.session and hasattr(self.session, "take_screenshot"):
             self.snapshot_btn.configure(state="disabled")
@@ -334,6 +353,7 @@ class SessionTab:
         self.save_btn.configure(state="disabled", fg_color="#3a3a3c")
         self.reset_btn.configure(state="disabled", fg_color="#3a3a3c")
         self.info_label.configure(text="SESSION DISCARDED", text_color=ACCENT_ORANGE)
+
         self.update_ui_state(self.capture_dropdown.get())
 
     def on_close(self):
@@ -341,7 +361,7 @@ class SessionTab:
         if self.session:
             try:
                 self.session.stop()
-            except:
+            except Exception:
                 pass
         # Callback to remove tab
         if self.close_callback:
@@ -349,6 +369,14 @@ class SessionTab:
 
 
 class DiagnosticApp(ctk.CTk):
+    """
+    THE RESTAURANT MANAGER
+    This is the main window. Its job is to:
+    1. Open the doors (START).
+    2. Find customers (REFRESH DEVICES).
+    3. Seat them at tables (CREATE TABS).
+    """
+
     def __init__(self):
         super().__init__()
 
@@ -462,7 +490,7 @@ class DiagnosticApp(ctk.CTk):
             # Verify if this tab exists (it might have a slightly different name if we changed logic, safe check)
             try:
                 self.tab_system.delete(label)
-            except:
+            except Exception:
                 # Fallback: scan tabs if needed, but precise name should work
                 pass
 
