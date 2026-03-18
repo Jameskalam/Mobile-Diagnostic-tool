@@ -2,13 +2,15 @@ import os
 import subprocess
 import shutil
 import time
-import uuid
 from pathlib import Path
-from tkinter import messagebox, Toplevel, Listbox, Button, Label, SINGLE
-import tkinter as tk
-import win32com.client
 
-# i have an idea like in broswer where youser can create a n number of tabs by clicking + , can we implement here like that where user can select 1 as android video log and 2 as iOS for log like ....5 tabs alone , if dont want user can easily cut that
+# ==============================================================================
+# THE CHEF: iOS (ios_handler.py)
+# ==============================================================================
+# This file does the cooking for iPhones.
+# It's a bit different from Android because iPhones are strict!
+# We have to use special tricks (like creating .bat files) to make them talk to us.
+# ==============================================================================
 
 # ---------------- CONFIG ----------------
 import sys
@@ -24,11 +26,9 @@ AMA_PATH = TOOLS_DIR / "ios" / "AMA_iOS_Tool" / "AMA_iOS_Tool"
 
 BATCH_FILE = os.path.join(AMA_PATH, "ApplePhone_Log_Capture.bat")
 IOS_LOG_DIR = os.path.join(AMA_PATH, "iOS_Logs")
-TEMP_VIDEO_DIR = Path.home() / "Videos" / "iPhone_Temp"
 
-START_BUFFER = 10  # seconds before session start
-END_BUFFER = 10  # seconds after session end
-COUNTDOWN_SECONDS = 3  # countdown before starting
+# Working folder for in-progress captures
+WORK_FOLDER = BASE_DIR / "temp_session"
 
 
 class IOSSession:
@@ -36,9 +36,12 @@ class IOSSession:
         self.udid = udid
         self._proc = None
         self._log_file = None
-        self.session_start_time = None
-        self.session_end_time = None
+        self._batch_file = None
         self.current_log_name = None  # Track specific log for this session
+        self.log_path = None  # Full path to log
+
+        # Ensure work folder exists
+        WORK_FOLDER.mkdir(parents=True, exist_ok=True)
 
     # ---------------- CONNECTION ----------------
     def is_connected(self):
@@ -54,169 +57,180 @@ class IOSSession:
             )
             return self.udid in res.stdout
         except Exception as e:
-            print(f"Connection check failed: {e}")
             return False
 
+    def get_device_info(self):
+        """Fetches Model, OS Version, and Build via ideviceinfo"""
+        info = {
+            "Device": "iPhone",
+            "OS_Version": "Unknown",
+            "Build": "Unknown",
+            "Serial": self.udid,
+        }
+        exe = os.path.join(AMA_PATH, "ideviceinfo.exe")
+        try:
+            res = subprocess.run(
+                [exe, "-u", self.udid],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            output = res.stdout
+
+            # Simple parser for Key: Value
+            data = {}
+            for line in output.splitlines():
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    data[key.strip()] = val.strip()
+
+            info["Device"] = data.get("ProductType", "iPhone")
+            info["OS_Version"] = f"iOS {data.get('ProductVersion', 'Unknown')}"
+            info["Build"] = data.get("BuildVersion", "Unknown")
+
+        except Exception as e:
+            pass
+
+        return info
+
     # ---------------- START ----------------
-    def start(self, show_instructions=True):
-        """Start iOS log capture session with countdown"""
+    def start(self):
+        """Start iOS log capture session"""
 
-        # Show countdown before starting
-        self._show_countdown(COUNTDOWN_SECONDS)
+        # Fetch device info immediately
+        self.get_device_info()
 
-        # Record session start time (after countdown)
-        self.session_start_time = time.time()
-
-        # Generate unique log filename with timestamp + UUID to prevent overwrites
+        # Generate unique log filename
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]  # Short UUID
-        log_filename = f"IOS_log_{timestamp}_{unique_id}.txt"
-        self.current_log_name = log_filename  # Store for saving
+        log_filename = f"ios_log_{self.udid[:8]}_{timestamp}.txt"
+        self.current_log_name = log_filename
+        self.log_path = WORK_FOLDER / log_filename
 
-        # Ensure iOS_Logs directory exists
+        # Ensure iOS_Logs directory exists (Legacy, but we use it as intermediate storage)
         os.makedirs(IOS_LOG_DIR, exist_ok=True)
 
-        # Create a custom batch file with unique log name (visible CMD window)
-        # idevicesyslog -u <udid>
-        custom_batch = os.path.join(AMA_PATH, f"capture_{unique_id}.bat")
-        with open(custom_batch, "w") as f:
-            f.write(f"@ECHO OFF\n")
-            f.write(f"ECHO Starting iOS Log Capture ({self.udid})...\n")
-            f.write(f"ECHO.\n")
-            f.write(f"idevicesyslog.exe -u {self.udid} >> iOS_Logs\\{log_filename}\n")
+        # Custom batch file written to work folder instead of source directory
+        self._batch_file = WORK_FOLDER / f"capture_{self.udid[:8]}.bat"
+        with open(self._batch_file, "w") as f:
+            f.write("@ECHO OFF\n")
+            f.write(f"ECHO Connected iOS Device ID: {self.udid[:8]}...\n")
+            f.write("ECHO CAPTURING LOGS...\n")
+            f.write(f'idevicesyslog.exe -u {self.udid} >> "{self.log_path}"\n')
 
-        # Launch custom batch file for log capture
         try:
             self._proc = subprocess.Popen(
-                [custom_batch],
+                [str(self._batch_file)],
                 cwd=AMA_PATH,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
-            print(f"Session started at: {time.ctime(self.session_start_time)}")
-            print(f"Log file: {log_filename}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to start log capture: {e}")
-            self.session_start_time = None
+            raise RuntimeError(f"Failed to start log capture: {e}")
 
-    def _show_countdown(self, seconds):
-        """Display countdown window"""
-        countdown_window = Toplevel()
-        countdown_window.title("Starting Session")
-        countdown_window.geometry("300x100")
-        countdown_window.resizable(False, False)
+    def take_screenshot(self):
+        """Capture a screenshot from iOS device"""
+        try:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"ios_screenshot_{self.udid[:8]}_{ts}.png"
+            path = WORK_FOLDER / filename
 
-        label = Label(countdown_window, text="", font=("Arial", 24))
-        label.pack(expand=True)
+            counter = 1
+            while path.exists():
+                path = (
+                    WORK_FOLDER / f"ios_screenshot_{self.udid[:8]}_{ts}_{counter}.png"
+                )
+                counter += 1
 
-        for i in range(seconds, 0, -1):
-            label.config(text=f"Starting in {i}...")
-            countdown_window.update()
-            time.sleep(1)
+            exe = os.path.join(AMA_PATH, "idevicescreenshot.exe")
 
-        countdown_window.destroy()
+            # idevicescreenshot [OPTIONS] FILE
+            result = subprocess.run(
+                [exe, "-u", self.udid, str(path)],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+
+            if result.returncode == 0 and path.exists():
+                return True, path
+            else:
+                return False, None
+        except Exception as e:
+            return False, None
 
     # ---------------- STOP ----------------
     def stop(self):
         """Stop iOS log capture session"""
-        self.session_end_time = time.time()
-
         if self._proc:
             try:
                 subprocess.run(
-                    f"taskkill /F /T /PID {self._proc.pid}", shell=True, timeout=5
+                    f"taskkill /F /T /PID {self._proc.pid}",
+                    shell=True,
+                    timeout=5,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-                print(f"Session ended at: {time.ctime(self.session_end_time)}")
+            except Exception:
+                pass
 
-                # Close log file to ensure all data is written
-                if self._log_file:
-                    self._log_file.close()
-                    self._log_file = None
-
-                # Grace period for file system to finalize writes
-                time.sleep(2)
-            except Exception as e:
-                print(f"Error stopping process: {e}")
-        else:
-            messagebox.showwarning("Warning", "No active session to stop")
+            # Grace period for file system to finalize writes
+            time.sleep(2)
 
     # ---------------- SAVE ----------------
     def save(self, target_dir: Path):
-        """Save logs from the session (video functionality removed)"""
-
-        if not self.session_start_time or not self.session_end_time:
-            messagebox.showerror(
-                "Error", "Invalid session: start or stop time not recorded"
-            )
-            return False, "Invalid session times"
-
+        """Save logs and screenshots from the session"""
         target_dir.mkdir(parents=True, exist_ok=True)
+        exported = False
 
         # ---------------- Save Logs ----------------
-        log_saved = self._save_logs(target_dir)
+        if self.log_path and self.log_path.exists():
+            self._copy_protected(self.log_path, target_dir)
+            exported = True
 
-        if log_saved:
-            return True, "iOS Logs Exported Successfully"
+        # ---------------- Save Screenshots ----------------
+        screenshots = list(WORK_FOLDER.glob(f"ios_screenshot_{self.udid[:8]}_*.png"))
+        if screenshots:
+            for shot in screenshots:
+                self._copy_protected(shot, target_dir)
+            exported = True
+
+        if exported:
+            return True, "iOS Session data exported successfully"
         else:
-            return False, "Failed to save log files"
+            return False, "No data captured."
 
-    def _save_logs(self, target_dir: Path):
-        """Save the current session's log file"""
-        try:
-            # Use specific log file if we tracked it
-            if self.current_log_name:
-                source_path = Path(IOS_LOG_DIR) / self.current_log_name
-            else:
-                # Fallback to latest (legacy behavior)
-                logs = list(Path(IOS_LOG_DIR).glob("*.txt"))
-                if not logs:
-                    messagebox.showwarning("Warning", "No log file found")
-                    return False
-                source_path = max(logs, key=os.path.getctime)
+    def _copy_protected(self, source_path: Path, target_dir: Path):
+        """Copy file to target_dir with rename if exists to prevent overwrite"""
+        if not source_path.exists():
+            return None
 
-            if not source_path.exists():
-                messagebox.showerror("Error", f"Log file not found: {source_path.name}")
-                return False
+        destination = target_dir / source_path.name
+        counter = 1
+        stem = destination.stem
+        suffix = destination.suffix
 
-            # Ensure unique destination filename
-            base_name = source_path.stem
-            extension = source_path.suffix
-            destination = target_dir / source_path.name
+        while destination.exists():
+            new_name = f"{stem}_{counter}{suffix}"
+            destination = target_dir / new_name
+            counter += 1
 
-            counter = 1
-            while destination.exists():
-                new_name = f"{base_name}_{counter}{extension}"
-                destination = target_dir / new_name
-                counter += 1
-
-            print(f"Copying log from: {source_path}")
-            print(f"Copying log to: {destination}")
-
-            shutil.copy2(source_path, destination)
-
-            # Verify the file was copied
-            if destination.exists():
-                print(f"✓ Log saved successfully: {destination.name}")
-                print(f"✓ File size: {destination.stat().st_size} bytes")
-                # messagebox.showinfo("Success", f"Log exported to:\n{destination}") # Suppress duplicate popup if needed
-                return True
-            else:
-                print(f"✗ File copy failed!")
-                return False
-
-        except Exception as e:
-            print(f"Error during save: {e}")
-            messagebox.showerror("Error", f"Failed to save log: {e}")
-            return False
-
-    # ---------------- SESSION INFO ----------------
-    def get_session_duration(self):
-        """Get session duration in seconds"""
-        if self.session_start_time and self.session_end_time:
-            return self.session_end_time - self.session_start_time
-        return 0
+        shutil.copy2(source_path, destination)
+        return destination
 
     def reset(self):
-        """Reset session state"""
-        self.session_start_time = None
-        self.session_end_time = None
+        """Reset session and delete working files"""
+        try:
+            if self._proc:
+                self.stop()
+            # Clean work files for this UDID
+            for item in WORK_FOLDER.glob(f"*_{self.udid[:8]}_*"):
+                if item.is_file():
+                    item.unlink()
+            # Clean up the generated batch file
+            if self._batch_file and self._batch_file.exists():
+                self._batch_file.unlink()
+        except Exception as e:
+            pass
+
         self._proc = None
+        self._batch_file = None

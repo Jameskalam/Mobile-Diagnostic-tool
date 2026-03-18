@@ -3,6 +3,14 @@ from pathlib import Path
 import sys
 import re
 
+# ==============================================================================
+# THE SCOUT (device_manager.py)
+# ==============================================================================
+# This file has ONE job: To go out and find devices.
+# It does NOT control them. It just yells "I found a Pixel 7!" or "I found an iPhone!"
+# It's like the Host checking who is waiting at the door.
+# ==============================================================================
+
 # Determine base path for portability
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -30,31 +38,24 @@ class DeviceManager:
                 [ADB_PATH, "devices", "-l"],
                 capture_output=True,
                 text=True,
+                timeout=10,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            print(result.stdout)
             output = result.stdout.strip().splitlines()
-            print(output)
             # Skip first line "List of devices attached"
             for line in output[1:]:
-                print(line)
                 if not line.strip():
                     continue
 
                 parts = line.split()
-                print(parts)
                 serial = parts[0]
-                print(serial)
                 status = parts[1]
-                print(status)
 
                 # Extract model if available
                 model = "Android Device"
                 model_match = re.search(r"model:(\S+)", line)
-                print(model_match)
                 if model_match:
                     model = model_match.group(1).replace("_", " ")
-                print(model)
                 devices.append(
                     {
                         "id": serial,
@@ -64,10 +65,9 @@ class DeviceManager:
                         "label": f"{model} ({serial})",
                     }
                 )
-                print(devices)
 
         except Exception as e:
-            print(f"Error getting Android devices: {e}")
+            pass
 
         return devices
 
@@ -86,6 +86,7 @@ class DeviceManager:
                 [IDEVICE_ID_PATH, "-l"],
                 capture_output=True,
                 text=True,
+                timeout=10,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             udids = result.stdout.strip().splitlines()
@@ -107,21 +108,15 @@ class DeviceManager:
                 )
 
         except Exception as e:
-            print(f"Error getting iOS devices: {e}")
+            pass
 
         return devices
 
     @staticmethod
     def get_all_devices():
-        return DeviceManager.get_android_devices() + DeviceManager.get_ios_devices()
+        devices = DeviceManager.get_android_devices() + DeviceManager.get_ios_devices()
+        return devices[:5]
 
 
 if __name__ == "__main__":
-    print("Searching for devices...")
     devices = DeviceManager.get_all_devices()
-    if not devices:
-        print("No devices found.")
-    else:
-        print(f"Found {len(devices)} device(s):")
-        for dev in devices:
-            print(f"- {dev['label']} (Status: {dev['status']})")

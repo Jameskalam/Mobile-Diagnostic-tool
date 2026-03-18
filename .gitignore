@@ -26,3 +26,9 @@ Thumbs.db
 
 # Saved captures
 saved_output/
+
+# Generated iOS capture batch files
+tools/ios/**/capture_*.bat
+
+# Session working files
+temp_session/
